@@ -18,7 +18,8 @@ sys.path.append(os.path.dirname(__file__))
 
 from train_model import predict_category, train_and_save_model, MODEL_FILE, TRAINING_DATA
 
-API_URL = "http://localhost:8000/api"
+# Uses the deployed backend URL if set in Render environment variables, otherwise local
+API_URL = os.getenv("API_URL", "http://localhost:8000/api")
 
 # Streamlit Page Setup
 st.set_page_config(
@@ -75,7 +76,7 @@ def load_transactions():
         df["Type"] = df["Type"].str.capitalize()
         return df
     except requests.exceptions.RequestException as e:
-        st.error(f"Backend connection failed. Is FastAPI running on port 8000?")
+        st.error(f"Backend connection failed. Is FastAPI running or API_URL environment variable set?")
         return pd.DataFrame()
 
 def load_investments():
@@ -143,13 +144,24 @@ with tabs[0]:
     df_inv = load_investments()
     df_goals = load_goals()
 
-    total_income = df_tx[df_tx["Type"] == "Income"]["Amount (₹)"].sum() if not df_tx.empty else 0
-    total_expense = df_tx[df_tx["Type"] == "Expense"]["Amount (₹)"].sum() if not df_tx.empty else 0
+    # Safely calculate KPI metrics to avoid KeyError on empty DataFrames
+    if not df_tx.empty and "Type" in df_tx.columns:
+        total_income = df_tx[df_tx["Type"] == "Income"]["Amount (₹)"].sum()
+        total_expense = df_tx[df_tx["Type"] == "Expense"]["Amount (₹)"].sum()
+    else:
+        total_income = 0
+        total_expense = 0
+        
     net_savings = total_income - total_expense
     savings_rate = (net_savings / total_income * 100) if total_income > 0 else 0
 
-    total_invested = df_inv["Invested (₹)"].sum() if not df_inv.empty else 0
-    total_portfolio_val = df_inv["Current Value (₹)"].sum() if not df_inv.empty else 0
+    if not df_inv.empty and "Invested (₹)" in df_inv.columns:
+        total_invested = df_inv["Invested (₹)"].sum()
+        total_portfolio_val = df_inv["Current Value (₹)"].sum()
+    else:
+        total_invested = 0
+        total_portfolio_val = 0
+        
     portfolio_gain = total_portfolio_val - total_invested
 
     # Top KPI Metrics Row
@@ -161,40 +173,43 @@ with tabs[0]:
 
     st.divider()
 
-    # Visual Charts (Updated for Modern UI)
+    # Visual Charts (Updated for Modern UI and Empty DataFrame Safety)
     col_left, col_right = st.columns([1, 1])
 
     with col_left:
         st.subheader("Spending by Category")
-        df_exp = df_tx[df_tx["Type"] == "Expense"]
-        if not df_exp.empty:
-            cat_summary = df_exp.groupby("Category")["Amount (₹)"].sum().reset_index()
-            fig_pie = px.pie(
-                cat_summary,
-                values="Amount (₹)",
-                names="Category",
-                hole=0.6,
-                color_discrete_sequence=px.colors.sequential.Tealgrn
-            )
-            fig_pie.update_traces(
-                textposition='inside', 
-                textinfo='percent+label',
-                hovertemplate="<b>%{label}</b><br>Amount: ₹%{value:,.2f}<extra></extra>"
-            )
-            fig_pie.update_layout(
-                showlegend=False,
-                margin=dict(t=10, b=10, l=10, r=10),
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                annotations=[dict(text='Expenses', x=0.5, y=0.5, font_size=20, showarrow=False)]
-            )
-            st.plotly_chart(fig_pie, use_container_width=True)
+        if not df_tx.empty and "Type" in df_tx.columns:
+            df_exp = df_tx[df_tx["Type"] == "Expense"]
+            if not df_exp.empty:
+                cat_summary = df_exp.groupby("Category")["Amount (₹)"].sum().reset_index()
+                fig_pie = px.pie(
+                    cat_summary,
+                    values="Amount (₹)",
+                    names="Category",
+                    hole=0.6,
+                    color_discrete_sequence=px.colors.sequential.Tealgrn
+                )
+                fig_pie.update_traces(
+                    textposition='inside', 
+                    textinfo='percent+label',
+                    hovertemplate="<b>%{label}</b><br>Amount: ₹%{value:,.2f}<extra></extra>"
+                )
+                fig_pie.update_layout(
+                    showlegend=False,
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    annotations=[dict(text='Expenses', x=0.5, y=0.5, font_size=20, showarrow=False)]
+                )
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.info("No expense data logged yet.")
         else:
             st.info("No expense data logged yet.")
 
     with col_right:
         st.subheader("Portfolio Asset Allocation")
-        if not df_inv.empty:
+        if not df_inv.empty and "Category" in df_inv.columns:
             inv_summary = df_inv.groupby("Category")["Current Value (₹)"].sum().reset_index()
             fig_bar = px.bar(
                 inv_summary,
@@ -287,7 +302,7 @@ with tabs[1]:
     st.divider()
     st.subheader("Financial Ledger")
     df_tx = load_transactions()
-    if not df_tx.empty:
+    if not df_tx.empty and "ID" in df_tx.columns:
         st.dataframe(df_tx, use_container_width=True, hide_index=True)
         
         # Delete Transaction Option
