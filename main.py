@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import func
 from typing import List, Optional
 import os
 
@@ -96,17 +97,26 @@ def retrain_model():
 
 @app.get("/api/ai/spending-audit")
 def generate_spending_audit(db: Session = Depends(get_db)):
-    """Generates an algorithmic and statistical spending audit from SQLite data."""
-    txs = db.query(models.Transaction).all()
-    total_income = sum(t.amount for t in txs if t.type == "income")
-    total_expense = sum(t.amount for t in txs if t.type == "expense")
+    """Generates an algorithmic and statistical spending audit heavily optimized via SQLite aggregation."""
+    
+    # Calculate totals directly at the database level
+    total_income = db.query(func.sum(models.Transaction.amount))\
+                     .filter(models.Transaction.type == "income").scalar() or 0.0
+    
+    total_expense = db.query(func.sum(models.Transaction.amount))\
+                      .filter(models.Transaction.type == "expense").scalar() or 0.0
+                      
     net_savings = total_income - total_expense
     savings_rate = (net_savings / total_income * 100) if total_income > 0 else 0
 
-    category_breakdown = {}
-    for t in txs:
-        if t.type == "expense":
-            category_breakdown[t.category] = category_breakdown.get(t.category, 0) + t.amount
+    # Group expenses by category dynamically via SQL
+    expense_breakdown = db.query(
+        models.Transaction.category, 
+        func.sum(models.Transaction.amount).label("total")
+    ).filter(models.Transaction.type == "expense").group_by(models.Transaction.category).all()
+    
+    category_breakdown = {cat: total for cat, total in expense_breakdown}
+    top_expense = max(category_breakdown.items(), key=lambda x: x[1]) if category_breakdown else ("None", 0)
 
     # Deterministic Local Financial Reasoning Rules
     recommendations = []
@@ -117,7 +127,6 @@ def generate_spending_audit(db: Session = Depends(get_db)):
     else:
         recommendations.append("✅ Healthy savings rate (20-40%). Maintain consistent allocation towards emergency reserves.")
 
-    top_expense = max(category_breakdown.items(), key=lambda x: x[1]) if category_breakdown else ("None", 0)
     if top_expense[0] != "None":
         recommendations.append(f"📌 Largest spending category: **{top_expense[0]}** (₹{top_expense[1]:,.2f}).")
 
