@@ -3,25 +3,28 @@ import sys
 import time
 import os
 
-# 1. Force the API URL to localhost since both apps will share the same container
-os.environ["API_URL"] = "http://localhost:8000/api"
+# 1. Use 127.0.0.1 explicitly to avoid IPv6 routing issues in cloud containers
+os.environ["API_URL"] = "http://127.0.0.1:8000/api"
 
 print("🚀 Starting FastAPI backend on port 8000...")
-backend = subprocess.Popen([
-    sys.executable, "-m", "uvicorn", "main:app", 
-    "--host", "0.0.0.0", "--port", "8000"
-])
+# Added stdout/stderr so if the backend crashes, the exact error prints to your Render logs!
+backend = subprocess.Popen(
+    [sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000"],
+    stdout=sys.stdout,
+    stderr=sys.stderr
+)
 
-# Give the backend 3 seconds to fully boot up before starting the frontend
-time.sleep(3)
+# 2. Give the cloud container 8 seconds to fully boot the FastAPI server
+print("⏳ Waiting for backend to initialize...")
+time.sleep(8)
 
 print("🎨 Starting Streamlit frontend...")
-# Cloud providers like Render assign a dynamic port for external web traffic
 web_port = os.environ.get("PORT", "8501") 
-frontend = subprocess.Popen([
-    sys.executable, "-m", "streamlit", "run", "app.py", 
-    "--server.port", web_port, "--server.address", "0.0.0.0"
-])
+frontend = subprocess.Popen(
+    [sys.executable, "-m", "streamlit", "run", "app.py", "--server.port", web_port, "--server.address", "0.0.0.0"],
+    stdout=sys.stdout,
+    stderr=sys.stderr
+)
 
 try:
     # Keep the script running
