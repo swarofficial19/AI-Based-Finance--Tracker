@@ -1,14 +1,11 @@
 """
 FinTracker AI - Streamlit Web Application
-Frontend & Interactive UI decoupled from DB, powered by Streamlit, Plotly, Pandas, and Requests.
+Monolithic Cloud-Optimized Version (Direct SQLite + Local ML)
 """
 
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
-import requests
 from datetime import datetime, date
 import os
 import sys
@@ -16,10 +13,13 @@ import sys
 # Add python_app directory to Python path for direct imports
 sys.path.append(os.path.dirname(__file__))
 
-from train_model import predict_category, train_and_save_model, MODEL_FILE, TRAINING_DATA
+from database import engine, SessionLocal, Base
+import models
+import config
+from train_model import predict_category, train_and_save_model
 
-# Uses the deployed backend URL if set in Render environment variables, otherwise local
-API_URL = os.getenv("API_URL", "http://localhost:8000/api")
+# Initialize SQLite tables
+Base.metadata.create_all(bind=engine)
 
 # Streamlit Page Setup
 st.set_page_config(
@@ -29,7 +29,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS Styling for a Clean, Modern Look
+# Custom CSS Styling
 st.markdown("""
 <style>
     .metric-card {
@@ -56,80 +56,71 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# --- REST API Helper Functions ---
+# --- DB Helper Functions ---
+def get_db_session():
+    return SessionLocal()
+
 def load_transactions():
+    db = get_db_session()
     try:
-        res = requests.get(f"{API_URL}/transactions")
-        if res.status_code != 200:
-            return pd.DataFrame()
-            
-        data = res.json()
-        if not data:
-            return pd.DataFrame()
-            
-        df = pd.DataFrame(data)
-        df.rename(columns={
-            "id": "ID", "title": "Title", "amount": "Amount (₹)", 
-            "type": "Type", "category": "Category", "date": "Date", 
-            "payment_method": "Payment Method", "notes": "Notes"
-        }, inplace=True)
-        df["Type"] = df["Type"].str.capitalize()
-        return df
-    except requests.exceptions.RequestException as e:
-        st.error(f"Backend connection failed. Is FastAPI running or API_URL environment variable set?")
-        return pd.DataFrame()
+        txs = db.query(models.Transaction).order_by(models.Transaction.date.desc(), models.Transaction.id.desc()).all()
+        data = [{
+            "ID": t.id,
+            "Title": t.title,
+            "Amount (₹)": t.amount,
+            "Type": t.type.capitalize(),
+            "Category": t.category,
+            "Date": t.date,
+            "Payment Method": t.payment_method,
+            "Notes": t.notes or ""
+        } for t in txs]
+        return pd.DataFrame(data)
+    finally:
+        db.close()
 
 def load_investments():
+    db = get_db_session()
     try:
-        res = requests.get(f"{API_URL}/investments")
-        if res.status_code != 200:
-            return pd.DataFrame()
-            
-        data = res.json()
-        if not data:
-            return pd.DataFrame()
-            
-        df = pd.DataFrame(data)
-        df.rename(columns={
-            "id": "ID", "name": "Name", "category": "Category", 
-            "invested_amount": "Invested (₹)", "current_value": "Current Value (₹)", 
-            "purchase_date": "Date"
-        }, inplace=True)
-        df["Gain/Loss (₹)"] = df["Current Value (₹)"] - df["Invested (₹)"]
-        df["ROI (%)"] = ((df["Gain/Loss (₹)"] / df["Invested (₹)"]) * 100).round(2).fillna(0)
-        return df
-    except requests.exceptions.RequestException:
-        return pd.DataFrame()
+        invs = db.query(models.Investment).order_by(models.Investment.id.desc()).all()
+        data = [{
+            "ID": i.id,
+            "Name": i.name,
+            "Category": i.category,
+            "Invested (₹)": i.invested_amount,
+            "Current Value (₹)": i.current_value,
+            "Gain/Loss (₹)": i.current_value - i.invested_amount,
+            "ROI (%)": round(((i.current_value - i.invested_amount) / i.invested_amount * 100), 2) if i.invested_amount > 0 else 0,
+            "Date": i.purchase_date or ""
+        } for i in invs]
+        return pd.DataFrame(data)
+    finally:
+        db.close()
 
 def load_goals():
+    db = get_db_session()
     try:
-        res = requests.get(f"{API_URL}/goals")
-        if res.status_code != 200:
-            return pd.DataFrame()
-            
-        data = res.json()
-        if not data:
-            return pd.DataFrame()
-            
-        df = pd.DataFrame(data)
-        df.rename(columns={
-            "id": "ID", "title": "Goal Title", "target_amount": "Target (₹)", 
-            "current_amount": "Saved (₹)", "target_date": "Target Date", 
-            "category": "Category"
-        }, inplace=True)
-        df["Progress (%)"] = ((df["Saved (₹)"] / df["Target (₹)"]) * 100).round(1).fillna(0)
-        return df
-    except requests.exceptions.RequestException:
-        return pd.DataFrame()
+        goals = db.query(models.Goal).all()
+        data = [{
+            "ID": g.id,
+            "Goal Title": g.title,
+            "Target (₹)": g.target_amount,
+            "Saved (₹)": g.current_amount,
+            "Progress (%)": round((g.current_amount / g.target_amount * 100), 1) if g.target_amount > 0 else 0,
+            "Target Date": g.target_date,
+            "Category": g.category
+        } for g in goals]
+        return pd.DataFrame(data)
+    finally:
+        db.close()
 
 
 # --- TOP NAVIGATION & HEADER ---
 st.title("💼 FinTracker AI")
-st.caption("🚀 Frontend Dashboard (Powered by FastAPI Backend & Local ML)")
+st.caption("🚀 Monolithic Cloud Dashboard (Streamlit + SQLite + Local ML)")
 
 tabs = st.tabs([
     "📊 Executive Dashboard",
-    "📝 Smart Expense Tracker (with ML)",
+    "📝 Smart Expense Tracker",
     "📈 Investments & Portfolio",
     "🎯 Savings Goals",
     "🤖 Local ML Model Studio"
@@ -144,7 +135,6 @@ with tabs[0]:
     df_inv = load_investments()
     df_goals = load_goals()
 
-    # Safely calculate KPI metrics to avoid KeyError on empty DataFrames
     if not df_tx.empty and "Type" in df_tx.columns:
         total_income = df_tx[df_tx["Type"] == "Income"]["Amount (₹)"].sum()
         total_expense = df_tx[df_tx["Type"] == "Expense"]["Amount (₹)"].sum()
@@ -164,7 +154,6 @@ with tabs[0]:
         
     portfolio_gain = total_portfolio_val - total_invested
 
-    # Top KPI Metrics Row
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Income (Inflow)", f"₹{total_income:,.2f}")
     c2.metric("Total Expenses (Outflow)", f"₹{total_expense:,.2f}", delta=f"-₹{total_expense:,.2f}", delta_color="inverse")
@@ -173,7 +162,6 @@ with tabs[0]:
 
     st.divider()
 
-    # Visual Charts (Updated for Modern UI and Empty DataFrame Safety)
     col_left, col_right = st.columns([1, 1])
 
     with col_left:
@@ -201,7 +189,8 @@ with tabs[0]:
                     plot_bgcolor='rgba(0,0,0,0)',
                     annotations=[dict(text='Expenses', x=0.5, y=0.5, font_size=20, showarrow=False)]
                 )
-                st.plotly_chart(fig_pie, use_container_width=True)
+                # Updated parameter based on logs
+                st.plotly_chart(fig_pie, width="stretch")
             else:
                 st.info("No expense data logged yet.")
         else:
@@ -236,7 +225,7 @@ with tabs[0]:
                 xaxis=dict(showgrid=False),
                 yaxis=dict(showgrid=True, gridcolor='#e2e8f0')
             )
-            st.plotly_chart(fig_bar, use_container_width=True)
+            st.plotly_chart(fig_bar, width="stretch")
         else:
             st.info("No investments added yet.")
 
@@ -253,7 +242,6 @@ with tabs[1]:
         with form_col1:
             title_input = st.text_input("Transaction Description / Merchant", placeholder="e.g. Swiggy gourmet burger meal or Uber cab")
             
-            # Interactive Machine Learning Auto-Categorization
             predicted_cat = "Food & Dining"
             confidence = 1.0
             if title_input.strip():
@@ -266,36 +254,33 @@ with tabs[1]:
             amount_input = st.number_input("Amount (₹)", min_value=1.0, step=50.0, value=250.0)
 
         r2_c1, r2_c2, r2_c3, r2_c4 = st.columns(4)
-        tx_type = r2_c1.selectbox("Type", ["Expense", "Income"])
+        tx_type = r2_c1.selectbox("Type", [t.capitalize() for t in config.TRANSACTION_TYPES])
         
-        categories = [
-            "Food & Dining", "Groceries", "Transportation", "Utilities",
-            "Shopping", "Entertainment", "Healthcare", "Housing & Rent",
-            "Investments", "Salary & Income", "Other"
-        ]
+        categories = config.TRANSACTION_CATEGORIES
         default_cat_idx = categories.index(predicted_cat) if predicted_cat in categories else 0
         category_choice = r2_c2.selectbox("Category", categories, index=default_cat_idx)
         
         tx_date = r2_c3.date_input("Date", value=date.today())
-        payment_method = r2_c4.selectbox("Payment Method", ["UPI", "Credit Card", "Debit Card", "Net Banking", "Cash"])
+        payment_method = r2_c4.selectbox("Payment Method", config.PAYMENT_METHODS)
 
-        if st.button("➕ Save Transaction via API", type="primary"):
+        if st.button("➕ Save Transaction", type="primary"):
             if title_input.strip():
-                payload = {
-                    "title": title_input.strip(),
-                    "amount": float(amount_input),
-                    "type": tx_type.lower(),
-                    "category": category_choice,
-                    "date": str(tx_date),
-                    "payment_method": payment_method
-                }
+                db = get_db_session()
                 try:
-                    res = requests.post(f"{API_URL}/transactions", json=payload)
-                    res.raise_for_status()
+                    new_tx = models.Transaction(
+                        title=title_input.strip(),
+                        amount=float(amount_input),
+                        type=tx_type.lower(),
+                        category=category_choice,
+                        date=str(tx_date),
+                        payment_method=payment_method
+                    )
+                    db.add(new_tx)
+                    db.commit()
                     st.success("✅ Transaction successfully saved!")
                     st.rerun()
-                except requests.exceptions.RequestException as e:
-                    st.error(f"Failed to save transaction: {e}")
+                finally:
+                    db.close()
             else:
                 st.warning("Please enter a description.")
 
@@ -303,19 +288,21 @@ with tabs[1]:
     st.subheader("Financial Ledger")
     df_tx = load_transactions()
     if not df_tx.empty and "ID" in df_tx.columns:
-        st.dataframe(df_tx, use_container_width=True, hide_index=True)
+        st.dataframe(df_tx, width="stretch", hide_index=True)
         
-        # Delete Transaction Option
         del_col1, del_col2 = st.columns([3, 1])
         tx_to_del = del_col1.selectbox("Select Transaction ID to Delete", df_tx["ID"].tolist())
         if del_col2.button("🗑️ Delete Selected"):
+            db = get_db_session()
             try:
-                res = requests.delete(f"{API_URL}/transactions/{tx_to_del}")
-                res.raise_for_status()
-                st.success(f"Deleted transaction ID {tx_to_del}")
-                st.rerun()
-            except requests.exceptions.RequestException as e:
-                st.error(f"Failed to delete: {e}")
+                tx_obj = db.query(models.Transaction).filter(models.Transaction.id == tx_to_del).first()
+                if tx_obj:
+                    db.delete(tx_obj)
+                    db.commit()
+                    st.success(f"Deleted transaction ID {tx_to_del}")
+                    st.rerun()
+            finally:
+                db.close()
     else:
         st.info("Ledger is empty.")
 
@@ -329,7 +316,7 @@ with tabs[2]:
     with st.expander("➕ Add New Investment Asset", expanded=False):
         inv_c1, inv_c2 = st.columns(2)
         asset_name = inv_c1.text_input("Asset Name", placeholder="e.g. Parag Parikh Flexi Cap Fund")
-        asset_cat = inv_c2.selectbox("Asset Category", ["Mutual Funds", "Stocks", "Fixed Deposits", "PPF / EPF", "Gold", "Crypto", "Real Estate"])
+        asset_cat = inv_c2.selectbox("Asset Category", config.INVESTMENT_CATEGORIES)
         
         inv_r2_1, inv_r2_2, inv_r2_3 = st.columns(3)
         inv_amt = inv_r2_1.number_input("Invested Amount (₹)", min_value=100.0, step=1000.0, value=10000.0)
@@ -338,24 +325,25 @@ with tabs[2]:
 
         if st.button("Save Investment"):
             if asset_name.strip():
-                payload = {
-                    "name": asset_name.strip(),
-                    "category": asset_cat,
-                    "invested_amount": float(inv_amt),
-                    "current_value": float(curr_val),
-                    "purchase_date": str(p_date)
-                }
+                db = get_db_session()
                 try:
-                    res = requests.post(f"{API_URL}/investments", json=payload)
-                    res.raise_for_status()
+                    new_inv = models.Investment(
+                        name=asset_name.strip(),
+                        category=asset_cat,
+                        invested_amount=float(inv_amt),
+                        current_value=float(curr_val),
+                        purchase_date=str(p_date)
+                    )
+                    db.add(new_inv)
+                    db.commit()
                     st.success("Investment asset added!")
                     st.rerun()
-                except requests.exceptions.RequestException as e:
-                    st.error(f"Failed to save investment: {e}")
+                finally:
+                    db.close()
 
     df_inv = load_investments()
     if not df_inv.empty:
-        st.dataframe(df_inv, use_container_width=True, hide_index=True)
+        st.dataframe(df_inv, width="stretch", hide_index=True)
     else:
         st.info("No investments recorded.")
 
@@ -377,19 +365,21 @@ with tabs[3]:
 
         if st.button("Create Goal"):
             if goal_title.strip():
-                payload = {
-                    "title": goal_title.strip(),
-                    "target_amount": float(goal_target),
-                    "current_amount": float(goal_initial),
-                    "target_date": str(goal_date)
-                }
+                db = get_db_session()
                 try:
-                    res = requests.post(f"{API_URL}/goals", json=payload)
-                    res.raise_for_status()
+                    new_g = models.Goal(
+                        title=goal_title.strip(),
+                        target_amount=float(goal_target),
+                        current_amount=float(goal_initial),
+                        target_date=str(goal_date),
+                        category="Savings"
+                    )
+                    db.add(new_g)
+                    db.commit()
                     st.success("Goal successfully created!")
                     st.rerun()
-                except requests.exceptions.RequestException as e:
-                    st.error(f"Failed to save goal: {e}")
+                finally:
+                    db.close()
 
     df_goals = load_goals()
     if not df_goals.empty:
@@ -411,7 +401,7 @@ with tabs[3]:
 # ==========================================
 with tabs[4]:
     st.subheader("🤖 Local Scikit-Learn Model Training & Evaluation Studio")
-    st.write("This tab demonstrates your **locally trained NLP model** (TF-IDF + Multinomial Naive Bayes). It runs 100% offline with zero cloud API keys.")
+    st.write("This tab demonstrates your **locally trained NLP model** (TF-IDF + Multinomial Naive Bayes).")
 
     st.markdown("### 1. Interactive Classification Sandbox")
     sample_text = st.text_input("Enter any test transaction text:", value="Swiggy paneer butter masala delivery")
@@ -427,12 +417,12 @@ with tabs[4]:
             prob_df = prob_df.sort_values(by="Probability", ascending=True)
             fig_prob = px.bar(prob_df, x="Probability", y="Category", orientation='h', title="Class Probability Distribution")
             fig_prob.update_layout(margin=dict(t=30, b=10, l=10, r=10), height=300)
-            st.plotly_chart(fig_prob, use_container_width=True)
+            st.plotly_chart(fig_prob, width="stretch")
 
     st.divider()
     st.markdown("### 2. Model Training Dataset Preview")
     train_df = pd.DataFrame(TRAINING_DATA, columns=["Text Sample", "True Category"])
-    st.dataframe(train_df, use_container_width=True)
+    st.dataframe(train_df, width="stretch")
 
     st.divider()
     st.markdown("### 3. Retrain Model")
