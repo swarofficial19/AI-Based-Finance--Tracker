@@ -5,9 +5,9 @@ from sqlalchemy.sql import func
 from typing import List, Optional
 import os
 
-from .database import engine, Base, get_db
-from . import models, schemas
-from .train_model import predict_category, train_and_save_model
+from database import engine, Base, get_db
+import models, schemas
+from train_model import predict_category, train_and_save_model
 
 # Create database tables automatically
 Base.metadata.create_all(bind=engine)
