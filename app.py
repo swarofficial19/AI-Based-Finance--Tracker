@@ -6,6 +6,7 @@ Monolithic Cloud-Optimized Version (Direct SQLite + Local ML)
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime, date
 import os
 import sys
@@ -17,6 +18,8 @@ from database import engine, SessionLocal, Base
 import models
 import config
 from train_model import predict_category, train_and_save_model, TRAINING_DATA
+from analytics import get_spending_anomalies, simulate_what_if_scenario
+
 # Initialize SQLite tables
 Base.metadata.create_all(bind=engine)
 
@@ -122,7 +125,8 @@ tabs = st.tabs([
     "📝 Smart Expense Tracker",
     "📈 Investments & Portfolio",
     "🎯 Savings Goals",
-    "🤖 Local ML Model Studio"
+    "🤖 Local ML Model Studio",
+    "🎛️ AI What-If Simulator"
 ])
 
 
@@ -188,7 +192,6 @@ with tabs[0]:
                     plot_bgcolor='rgba(0,0,0,0)',
                     annotations=[dict(text='Expenses', x=0.5, y=0.5, font_size=20, showarrow=False)]
                 )
-                # Updated parameter based on logs
                 st.plotly_chart(fig_pie, width="stretch")
             else:
                 st.info("No expense data logged yet.")
@@ -227,6 +230,21 @@ with tabs[0]:
             st.plotly_chart(fig_bar, width="stretch")
         else:
             st.info("No investments added yet.")
+
+    # --- AI ANOMALY DETECTION ---
+    st.divider()
+    st.subheader("🚨 AI Anomaly Detection")
+    st.write("Using *Isolation Forest* machine learning to automatically flag unusual spending behavior based on your historical baseline.")
+    
+    anomalies_df = get_spending_anomalies(df_tx)
+    
+    if not anomalies_df.empty:
+        st.warning(f"**Attention:** We detected {len(anomalies_df)} unusual transactions that fall outside your normal spending patterns.")
+        st.dataframe(anomalies_df, width="stretch", hide_index=True)
+    elif not df_tx.empty and "Type" in df_tx.columns and len(df_tx[df_tx["Type"] == "Expense"]) < 10:
+        st.info("🤖 The AI needs at least 10 expense transactions to establish a baseline before detecting anomalies.")
+    else:
+        st.success("✅ No unusual spending detected. Your recent transactions align with your historical baseline.")
 
 
 # ==========================================
@@ -429,3 +447,76 @@ with tabs[4]:
         with st.spinner("Training TF-IDF + Naive Bayes Pipeline..."):
             pipe = train_and_save_model()
             st.success("🎉 Local model trained and saved as `expense_model.pkl`!")
+
+
+# ==========================================
+# TAB 6: AI WHAT-IF SIMULATOR
+# ==========================================
+with tabs[5]:
+    st.subheader("🎛️ AI What-If Counterfactual Simulator")
+    st.write("Adjust your spending behavior in key categories to predict your future financial trajectory. Discover how small behavioral shifts impact your monthly savings.")
+    
+    df_tx_sim = load_transactions()
+    
+    if df_tx_sim.empty or "Type" not in df_tx_sim.columns or len(df_tx_sim[df_tx_sim["Type"] == "Expense"]) == 0:
+        st.info("Log some expenses in the Smart Expense Tracker to use the simulator.")
+    else:
+        # Extract the top 4 expense categories for the interactive sliders
+        df_exp_sim = df_tx_sim[df_tx_sim["Type"] == "Expense"]
+        top_cats = df_exp_sim.groupby("Category")["Amount (₹)"].sum().sort_values(ascending=False).head(4).index.tolist()
+        
+        st.markdown("### Adjust Your Habits")
+        adjustments = {}
+        
+        sim_cols = st.columns(len(top_cats))
+        for i, cat in enumerate(top_cats):
+            with sim_cols[i]:
+                # Sliders allow +/- 50% adjustment in spending habits
+                val = st.slider(f"{cat} Adjustment (%)", min_value=-50, max_value=50, value=0, step=5, key=f"slider_{cat}")
+                if val != 0:
+                    adjustments[cat] = val
+                    
+        # Run the research-grade counterfactual simulation
+        sim_results = simulate_what_if_scenario(df_tx_sim, adjustments)
+        
+        if sim_results:
+            st.divider()
+            res_c1, res_c2 = st.columns([1, 2])
+            
+            with res_c1:
+                st.markdown("### Simulation Impact")
+                st.metric("Baseline Monthly Forecast", f"₹{sim_results['baseline_total']:,.2f}")
+                
+                delta_val = sim_results['savings_impact']
+                delta_str = f"+₹{abs(delta_val):,.2f} Saved" if delta_val > 0 else f"-₹{abs(delta_val):,.2f} Extra Spent"
+                delta_color = "normal" if delta_val > 0 else "inverse"
+                
+                if delta_val == 0:
+                    st.metric("Simulated Monthly Forecast", f"₹{sim_results['simulated_total']:,.2f}", delta="No Change", delta_color="off")
+                else:
+                    st.metric("Simulated Monthly Forecast", f"₹{sim_results['simulated_total']:,.2f}", delta=delta_str, delta_color=delta_color)
+            
+            with res_c2:
+                # Prepare visual comparison data
+                plot_data = []
+                for cat in sim_results['baseline_breakdown']:
+                    plot_data.append({"Category": cat, "Amount": sim_results['baseline_breakdown'][cat], "Scenario": "Baseline Forecast"})
+                    plot_data.append({"Category": cat, "Amount": sim_results['simulated_breakdown'][cat], "Scenario": "Simulated Reality"})
+                
+                df_plot = pd.DataFrame(plot_data)
+                
+                fig_sim = px.bar(
+                    df_plot, 
+                    x="Category", 
+                    y="Amount", 
+                    color="Scenario", 
+                    barmode="group",
+                    color_discrete_map={"Baseline Forecast": "#cbd5e1", "Simulated Reality": "#0f172a"}
+                )
+                fig_sim.update_layout(
+                    margin=dict(t=20, b=10, l=10, r=10),
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    legend_title_text=""
+                )
+                st.plotly_chart(fig_sim, width="stretch")
