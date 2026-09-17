@@ -16,8 +16,7 @@ sys.path.append(os.path.dirname(__file__))
 from database import engine, SessionLocal, Base
 import models
 import config
-from train_model import predict_category, train_and_save_model
-
+from train_model import predict_category, train_and_save_model, TRAINING_DATA
 # Initialize SQLite tables
 Base.metadata.create_all(bind=engine)
 
